@@ -4,31 +4,55 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Promoteme is a Rust CLI tool that generates "brag documents" - summaries of GitHub or Azure DevOps contributions for performance reviews. It fetches PRs via CLI tools, analyzes them, and uses AI (Claude by default) to synthesize impact narratives.
+Promoteme is a Rust CLI tool that generates "brag documents" - summaries of GitHub or Azure DevOps contributions for performance reviews. It fetches PRs via CLI tools, analyzes them, and uses AI (Claude by default) to synthesize impact narratives. It also supports a team mode (GitHub only) for engineering managers to generate level-aware team performance overviews.
 
 ## Running the CLI
 
 ```bash
-# Build the project
-cargo build --release
+# Build
+cargo build
 
 # Basic usage - GitHub (default)
-./target/release/promoteme generate
+./target/debug/promoteme generate
 
 # With date filters
-./target/release/promoteme generate --start-date 2024-01-01 --end-date 2024-06-30
+./target/debug/promoteme generate --start-date 2024-01-01 --end-date 2024-06-30
 
 # Specify output language
-./target/release/promoteme generate -l Portuguese
+./target/debug/promoteme generate -l Portuguese
 
 # Use specific AI model
-./target/release/promoteme generate -m claude@claude-opus-4-5
+./target/debug/promoteme generate -m claude@claude-opus-4-5
 
 # Use Azure DevOps as source
-./target/release/promoteme generate --source azuredevops --org myorg
+./target/debug/promoteme generate --source azuredevops --org myorg
 
 # Azure DevOps with project/repo filter
-./target/release/promoteme generate --source azuredevops --org myorg --repo myproject/myrepo
+./target/debug/promoteme generate --source azuredevops --org myorg --repo myproject/myrepo
+
+# Team mode - analyze all members of an org
+./target/debug/promoteme generate --team --org my-company --start-date 2025-01-01
+
+# Team setup - generate team.json template
+./target/debug/promoteme generate --team --org my-company --setup
+
+# Interview tracking - initialize a company
+./target/debug/promoteme interview init acme
+
+# Interview tracking - create a new step
+./target/debug/promoteme interview new 1 --company acme --title "Phone Screen"
+
+# Interview tracking - create a step and show teleprompter path
+./target/debug/promoteme interview new 2 --company acme --title "Technical" --start-teleprompter
+
+# Interview tracking - generate AI summary for a step
+./target/debug/promoteme interview summarize --company acme --step 1
+
+# Interview tracking - show progression across all companies
+./target/debug/promoteme interview progression
+
+# Interview tracking - show progression for one company with date filter
+./target/debug/promoteme interview progression --company acme --start-date 2025-01-01
 ```
 
 ## Dependencies
@@ -47,32 +71,78 @@ Common:
 
 ## Architecture
 
-Rust CLI with modular provider system supporting multiple PR sources:
+Rust CLI with a modular provider system and multiple modules:
 
-1. **Provider Layer**: Abstracted PR fetching via `PrProvider` trait
-   - `GitHubProvider`: Uses `gh` CLI
-   - `AzureDevOpsProvider`: Uses `az repos pr` commands
-2. **Processing**: Groups PRs by repo, analyzes each (scope, impact, risk, tests)
-3. **Consolidation**: AI synthesizes per-repo reports into final `README.md`
+1. **Provider Layer** (`src/provider.rs`): Abstracted PR fetching via `PrProvider` trait
+   - `GitHubProvider` (`src/github.rs`): Uses `gh` CLI; also hosts the GitHub-only review, commit, and org member queries used by team mode
+   - `AzureDevOpsProvider` (`src/azuredevops.rs`): Uses `az repos pr` commands
+2. **Processing** (`src/processor.rs`, `src/team.rs`): Groups PRs by repo, computes member stats
+3. **AI synthesis** (`src/ai.rs`): Generates final documents via AI CLI
+4. **Config** (`src/config.rs`): Loads/writes `team.json` for level-aware team evaluation
+5. **Interview tracking** (`src/interview.rs`): Manages interview processes per company
 
-**Output structure:**
+**Output structure (individual mode):**
 ```
-{username}/
-  ├── {repo1}.md      # Raw PR analysis
+artifacts/{username}_{timestamp}/
+  ├── {repo1}.md        # Per-repo PR analysis
   ├── {repo2}.md
-  └── README.md       # AI-generated executive summary
+  ├── NOTES_SUMMARY.md  # (optional) AI summary of personal notes
+  └── README.md         # AI-generated executive summary
+```
+
+**Output structure (team mode):**
+```
+{org_name}/{YYYY_MM_DD_HH_MM}/
+  ├── {member1}.md      # Per-member contribution report
+  ├── {member2}.md
+  ├── SCORES.md         # Quantitative scores table
+  └── README.md         # AI-generated team performance overview
+```
+
+**Output structure (interview mode):**
+```
+interviews/{company}/
+  ├── transcripts/
+  │   └── step_{NN}/    # external teleprompter writes .md files here
+  ├── notes/
+  │   └── step_{NN}.md  # user's personal notes per step
+  ├── INTERVIEW_{NN}_SUMMARY.md  # AI-generated summary per step
+  └── interview.json    # metadata and step tracking
 ```
 
 ## Key Files
 
-- `src/main.rs` - Entry point and orchestration
-- `src/cli.rs` - CLI argument parsing
+- `src/main.rs` - Entry point, CLI dispatch, `run_generate`, `run_team_generate`, `run_team_setup`, `resolve_members`
+- `src/cli.rs` - Clap CLI definitions
+- `src/ai.rs` - AI invocation and prompt construction
 - `src/provider.rs` - `PrProvider` trait definition
-- `src/github.rs` - GitHub provider implementation
+- `src/github.rs` - GitHub provider implementation and GitHub API calls via `gh` CLI
 - `src/azuredevops.rs` - Azure DevOps provider implementation
-- `src/processor.rs` - PR processing logic
-- `src/models.rs` - Data structures
-- `src/ai.rs` - AI integration for document generation
+- `src/config.rs` - `TeamConfig`, `MemberLevel`, `generate_setup_file`, `load_team_config`
+- `src/team.rs` - Member stats and report generation
+- `src/processor.rs` - PR processing and repo grouping
+- `src/interview.rs` - Interview tracking: `run_interview_init`, `run_interview_new`, `run_interview_summarize`, `run_interview_progression`
+- `src/prompt.txt` - AI prompt template for individual brag docs
+- `src/interview_prompt.txt` - AI prompt template for per-step interview summaries
+- `src/progression_prompt.txt` - AI prompt template for interview progression analysis
+- `EXAMPLES.md` - Usage examples
+
+## Team Config (`team.json`)
+
+Stored at `{org_name}/team.json` (written by `--setup`, auto-detected by generate). Covered by `.gitignore`. The AI uses level/role context to evaluate contributions relative to seniority expectations.
+
+```json
+{
+  "members": {
+    "alice": { "level": "senior", "role": "Backend Engineer" },
+    "bob":   { "level": "tech_lead", "role": null }
+  }
+}
+```
+
+Valid levels: `entrylevel`, `mid`, `senior`, `tech_lead`, `specialist`, `architect`, `manager`
+
+Generate template: `promoteme generate --team --org <org> --setup`
 
 ## Code Style Rules
 

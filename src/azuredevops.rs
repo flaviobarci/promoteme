@@ -20,8 +20,6 @@ struct AzurePr {
     #[serde(rename = "pullRequestId")]
     pull_request_id: i64,
     title: String,
-    #[serde(rename = "creationDate")]
-    creation_date: String,
     status: String,
     repository: AzureRepository,
 }
@@ -63,11 +61,6 @@ struct ProjectListResponse {
 #[derive(Debug, Deserialize)]
 struct ProjectInfo {
     name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AzurePrDetails {
-    description: Option<String>,
 }
 
 impl PrProvider for AzureDevOpsProvider {
@@ -249,16 +242,11 @@ impl PrProvider for AzureDevOpsProvider {
             bail!("Failed to fetch details for PR: {}", url);
         }
 
-        let stdout = String::from_utf8(output.stdout)?;
-        let azure_details: AzurePrDetails = serde_json::from_str(&stdout)
-            .context("Failed to parse Azure DevOps PR details")?;
-
         let files = fetch_pr_files(&org, pr_id);
 
         let (additions, deletions) = estimate_changes_from_files(&files);
 
         Ok(PrDetails {
-            body: azure_details.description,
             files,
             additions,
             deletions,
@@ -481,7 +469,7 @@ fn fetch_prs_for_org_project(
                 });
 
             let state = match pr.status.as_str() {
-                "completed" => "closed",
+                "completed" => "merged",
                 "active" => "open",
                 "abandoned" => "closed",
                 _ => &pr.status,
@@ -491,7 +479,6 @@ fn fetch_prs_for_org_project(
                 title: pr.title,
                 url,
                 repo: repo_name,
-                created_at: pr.creation_date,
                 state: state.to_string(),
             }
         })
